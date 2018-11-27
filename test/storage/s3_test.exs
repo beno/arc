@@ -32,6 +32,25 @@ defmodule ArcTest.Storage.S3 do
 
     def transform(:skipped, _), do: :skip
   end
+	
+  defmodule DefinitionWithConfig do
+    use Arc.Definition
+    @versions [:skipped]
+    @acl :public_read
+
+    def bucket, do: System.get_env("ARC_TEST_BUCKET")
+
+    def config do
+			role_arn = System.get_env("ARC_TEST_S3_ROLE_ARN")
+			role_name = "role-name"
+			with {:ok, %{body: role_credentials}} <- ExAws.STS.assume_role(role_arn, role_name) |> ExAws.request() do
+				[ access_key_id: role_credentials.access_key_id, 
+					secret_access_key: role_credentials.secret_access_key, 
+					security_token: role_credentials.session_token ]
+			end
+		end
+		
+  end
 
   defmodule DefinitionWithScope do
     use Arc.Definition
@@ -116,6 +135,11 @@ defmodule ArcTest.Storage.S3 do
   setup_all do
     Application.ensure_all_started(:hackney)
     Application.ensure_all_started(:ex_aws)
+  end
+  
+  setup do
+    Application.ensure_all_started(:hackney)
+    Application.ensure_all_started(:ex_aws)
     Application.put_env :arc, :virtual_host, false
     Application.put_env :arc, :bucket, { :system, "ARC_TEST_BUCKET" }
     # Application.put_env :ex_aws, :s3, [scheme: "https://", host: "s3.amazonaws.com", region: "us-west-2"]
@@ -124,6 +148,7 @@ defmodule ArcTest.Storage.S3 do
     # Application.put_env :ex_aws, :region, "us-east-1"
     # Application.put_env :ex_aws, :scheme, "https://"
   end
+  
 
   def with_env(app, key, value, fun) do
     previous = Application.get_env(app, key, :nothing)
@@ -257,4 +282,17 @@ defmodule ArcTest.Storage.S3 do
   test "url for a skipped version" do
     assert nil == DefinitionWithSkipped.url("image.png")
   end
+	
+  @tag :s3
+  @tag timeout: 150000
+  test "put with role based access" do
+		Application.put_env :arc, :virtual_host, true
+    Application.put_env :ex_aws, :role_arn,  System.get_env("ARC_TEST_S3_ROLE_ARN")
+    Application.put_env :ex_aws, :role_name,  "role-name"
+    Application.put_env :ex_aws, :region, "eu-west-1"
+		
+    assert {:ok, "image.png"} == DefinitionWithConfig.store(@img)
+    delete_and_assert_not_found(DefinitionWithConfig, "image.png")
+  end
+	
 end

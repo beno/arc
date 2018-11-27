@@ -1,20 +1,19 @@
 defmodule Arc.Storage.S3 do
   require Logger
   @default_expiry_time 60*5
-
+	
   def put(definition, version, {file, scope}) do
     destination_dir = definition.storage_dir(version, {file, scope})
     s3_bucket = s3_bucket(definition)
     s3_key = Path.join(destination_dir, file.file_name)
     asset_host = asset_host(definition)
     acl = definition.acl(version, {file, scope})
-
     s3_options =
       definition.s3_object_headers(version, {file, scope})
       |> ensure_keyword_list()
       |> Keyword.put(:acl, acl)
-
-    do_put(file, {s3_bucket, s3_key, s3_options})
+		s3_config = s3_config_overrides(definition)
+    do_put(file, {s3_bucket, s3_key, s3_options, s3_config})
   end
 
   def url(definition, version, file_and_scope, options \\ []) do
@@ -27,8 +26,7 @@ defmodule Arc.Storage.S3 do
   def delete(definition, version, {file, scope}) do
     s3_bucket(definition)
     |> ExAws.S3.delete_object(s3_key(definition, version, {file, scope}))
-    |> ExAws.request()
-
+    |> ExAws.request(s3_config_overrides(definition))
     :ok
   end
 
@@ -40,9 +38,9 @@ defmodule Arc.Storage.S3 do
   defp ensure_keyword_list(map) when is_map(map), do: Map.to_list(map)
 
   # If the file is stored as a binary in-memory, send to AWS in a single request
-  defp do_put(file=%Arc.File{binary: file_binary}, {s3_bucket, s3_key, s3_options}) when is_binary(file_binary) do
+  defp do_put(file=%Arc.File{binary: file_binary}, {s3_bucket, s3_key, s3_options, s3_config}) when is_binary(file_binary) do
     ExAws.S3.put_object(s3_bucket, s3_key, file_binary, s3_options)
-    |> ExAws.request()
+    |> ExAws.request(s3_config)
     |> case do
       {:ok, _res}     -> {:ok, file.file_name}
       {:error, error} -> {:error, error}
@@ -50,11 +48,11 @@ defmodule Arc.Storage.S3 do
   end
 
   # Stream the file and upload to AWS as a multi-part upload
-  defp do_put(file, {s3_bucket, s3_key, s3_options}) do
+  defp do_put(file, {s3_bucket, s3_key, s3_options, s3_config}) do
     file.path
     |> ExAws.S3.Upload.stream_file()
     |> ExAws.S3.upload(s3_bucket, s3_key, s3_options)
-    |> ExAws.request()
+    |> ExAws.request(s3_config)
     |> case do
       {:ok, %{status_code: 200}} -> {:ok, file.file_name}
       {:ok, :done} -> {:ok, file.file_name}
@@ -125,4 +123,12 @@ defmodule Arc.Storage.S3 do
       name -> name
     end
   end
+	
+	defp s3_config_overrides(definition) do
+		case function_exported?(definition, :config, 0) do
+			false -> []
+			true -> definition.config()
+		end
+	end
+	
 end
